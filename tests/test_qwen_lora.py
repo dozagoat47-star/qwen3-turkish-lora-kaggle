@@ -1,9 +1,7 @@
 import json
-import os
 import tempfile
 import unittest
-
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from pathlib import Path
 
 from clean_model.qwen_lora import encode_assistant_turn, train_adapter
 
@@ -57,11 +55,17 @@ class _FakeTokenizer:
 
 
 class TestQwenLora(unittest.TestCase):
+    def test_adapter_model_is_moved_to_cuda_before_training(self):
+        source_path = Path(__file__).resolve().parents[1]
+        source = (source_path / 'clean_model' / 'qwen_lora.py').read_text(
+            encoding='utf-8')
+        self.assertIn("    ).to('cuda')", source)
+
     def test_notebook_removes_unused_optional_torchao(self):
-        notebook_path = os.path.join(
-            BASE, 'kaggle_qwen3_0_6b_lora.ipynb')
-        with open(notebook_path, encoding='utf-8') as notebook_file:
-            notebook = json.load(notebook_file)
+        notebook_path = Path(__file__).resolve().parents[1]
+        notebook = json.loads(
+            (notebook_path / 'kaggle_qwen3_0_6b_lora.ipynb').read_text(
+                encoding='utf-8'))
         setup_source = ''.join(notebook['cells'][1]['source'])
         self.assertIn("'pip', 'uninstall', '-y', 'torchao'", setup_source)
         self.assertIn('This pilot does not use torchao', setup_source)
@@ -114,14 +118,13 @@ class TestQwenLora(unittest.TestCase):
 
     def test_refuses_nonempty_training_output_directory(self):
         with tempfile.TemporaryDirectory() as directory:
-            marker = os.path.join(directory, 'existing.txt')
-            with open(marker, 'w', encoding='utf-8') as output:
-                output.write('preserve')
+            marker = Path(directory) / 'existing.txt'
+            marker.write_text('preserve', encoding='utf-8')
             with self.assertRaisesRegex(
                     FileExistsError, 'training output directory is not empty'):
                 train_adapter('unused.jsonl', directory)
-            with open(marker, encoding='utf-8') as output:
-                self.assertEqual(output.read(), 'preserve')
+            self.assertEqual(marker.read_text(encoding='utf-8'), 'preserve')
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -27,6 +27,9 @@ This pilot does not use torchao, and an older preinstalled version can make
 PEFT fail while injecting LoRA layers; removing it avoids changing the
 Torch/CUDA installation.
 
+The LoRA-wrapped model is explicitly moved to CUDA before processing
+GPU-resident training batches.
+
 Assistant-only loss masking uses character offsets from the rendered chat
 template and tokenizes both training and generation text through the same
 tokenizer path. It does not assume chat-template token IDs exactly match

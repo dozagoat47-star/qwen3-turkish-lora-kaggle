@@ -217,7 +217,7 @@ def train_adapter(
                 'gate_proj', 'up_proj', 'down_proj',
             ],
         ),
-    )
+    ).to('cuda')
     model.print_trainable_parameters()
     optimizer = torch.optim.AdamW(
         (parameter for parameter in model.parameters()
