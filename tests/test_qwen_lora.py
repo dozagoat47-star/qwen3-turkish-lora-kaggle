@@ -1,9 +1,15 @@
+import hashlib
 import json
 import tempfile
 import unittest
 from pathlib import Path
+from zipfile import ZipFile
 
-from clean_model.qwen_lora import encode_assistant_turn, train_adapter
+from clean_model.qwen_lora import (
+    encode_assistant_turn,
+    prepare_splits,
+    train_adapter,
+)
 
 
 class _FakeTokenizer:
@@ -55,6 +61,74 @@ class _FakeTokenizer:
 
 
 class TestQwenLora(unittest.TestCase):
+    def test_expanded_notebook_downloads_pinned_bundle_without_kaggle_input(self):
+        root = Path(__file__).resolve().parents[1]
+        notebook = json.loads(
+            (root / 'kaggle_qwen3_0_6b_lora_expanded.ipynb').read_text(
+                encoding='utf-8'))
+        setup = ''.join(notebook['cells'][1]['source'])
+        self.assertIn("GITHUB_REF = 'qwen3-expanded-draft-001'", setup)
+        self.assertIn("'git', 'clone'", setup)
+        self.assertIn("datasets/qwen3_0_6b_lora_bundle_002.zip", setup)
+        self.assertNotIn("Path('/kaggle/input')", setup)
+
+    def test_published_bundle_is_hash_checked_and_attributed(self):
+        root = Path(__file__).resolve().parents[1]
+        bundle_path = root / 'datasets/qwen3_0_6b_lora_bundle_002.zip'
+        with ZipFile(bundle_path) as bundle:
+            manifest = json.loads(
+                bundle.read('bundle_manifest.json').decode('utf-8'))
+            self.assertEqual(manifest['record_count'], 2480)
+            self.assertEqual(manifest['review_status'], 'draft')
+            self.assertEqual(manifest['license'], 'CC BY 4.0')
+            self.assertEqual(
+                manifest['source_selection']['source_split'], 'train only')
+            self.assertIn(
+                'data/raw/turkish_daily_dialogues_sft_001/LICENSE',
+                bundle.namelist())
+            for name, expected_hash in manifest['files'].items():
+                self.assertEqual(
+                    hashlib.sha256(bundle.read(name)).hexdigest(),
+                    expected_hash,
+                )
+
+    def test_draft_records_need_explicit_opt_in_for_qwen_splits(self):
+        records = [{
+            'schema_version': 1,
+            'id': 'draft-%d' % index,
+            'group_id': 'family-%d' % index,
+            'kind': 'dialogue',
+            'messages': [
+                {'role': 'user', 'content': 'Soru %d?' % index},
+                {'role': 'assistant', 'content': 'Yanıt %d.' % index},
+            ],
+            'evidence': [],
+            'provenance': {
+                'dataset': 'test',
+                'license': 'CC BY 4.0',
+                'reference': 'https://example.invalid',
+            },
+            'review': {'status': 'draft'},
+        } for index in range(6)]
+        with tempfile.TemporaryDirectory() as directory:
+            data_path = Path(directory) / 'drafts.jsonl'
+            data_path.write_text(
+                ''.join(json.dumps(record) + '\n' for record in records),
+                encoding='utf-8',
+            )
+            with self.assertRaisesRegex(ValueError, 'status=approved'):
+                prepare_splits(data_path, tokenizer=_FakeTokenizer())
+            splits, summary = prepare_splits(
+                data_path,
+                tokenizer=_FakeTokenizer(),
+                require_approved=False,
+            )
+
+        self.assertEqual(summary['review_statuses'], ['draft'])
+        self.assertTrue(splits['train'])
+        self.assertTrue(splits['validation'])
+        self.assertTrue(splits['test'])
+
     def test_adapter_model_is_moved_to_cuda_before_training(self):
         source_path = Path(__file__).resolve().parents[1]
         source = (source_path / 'clean_model' / 'qwen_lora.py').read_text(

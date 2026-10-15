@@ -79,12 +79,15 @@ def prepare_splits(
     seed: int = SEED,
     max_sequence_length: int = MAX_SEQUENCE_LENGTH,
     tokenizer: Any | None = None,
+    require_approved: bool = True,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
-    """Validate approved data and encode group-safe train/validation/test turns."""
-    records = load_jsonl(dataset_path, require_approved=True)
+    """Validate and encode group-safe train/validation/test conversation turns."""
+    records = load_jsonl(
+        dataset_path, require_approved=require_approved)
     if any(record['kind'] != 'dialogue' for record in records):
         raise ValueError('Qwen LoRA pilot accepts dialogue records only')
-    split_records = split_by_group(records, seed=seed)
+    split_records = split_by_group(
+        records, seed=seed, require_approved=require_approved)
 
     if tokenizer is None:
         from transformers import AutoTokenizer
@@ -100,7 +103,8 @@ def prepare_splits(
     encoded_splits: dict[str, list[dict[str, Any]]] = {}
     for split_name, split in split_records.items():
         examples = []
-        for item in build_supervised_examples(split, require_approved=True):
+        for item in build_supervised_examples(
+                split, require_approved=require_approved):
             encoded = encode_assistant_turn(
                 item['context'],
                 item['target'],
@@ -118,7 +122,8 @@ def prepare_splits(
 
     summary = {
         'dataset_sha256': _sha256(Path(dataset_path)),
-        'dataset_fingerprint': dataset_fingerprint(records),
+        'dataset_fingerprint': dataset_fingerprint(
+            records, require_approved=require_approved),
         'record_counts': {
             name: len(rows) for name, rows in split_records.items()
         },
@@ -129,6 +134,19 @@ def prepare_splits(
             name: len({record['group_id'] for record in rows})
             for name, rows in split_records.items()
         },
+        'review_statuses': sorted({
+            record['review']['status'] for record in records
+        }),
+        'provenance': sorted(
+            {
+                (
+                    record['provenance']['dataset'],
+                    record['provenance']['license'],
+                    record['provenance']['reference'],
+                )
+                for record in records
+            }
+        ),
     }
     return encoded_splits, summary
 
@@ -139,6 +157,20 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: source.read(1024 * 1024), b''):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _select_test_examples(
+    examples: list[dict[str, Any]],
+    seed: int,
+    max_test_examples: int,
+) -> list[dict[str, Any]]:
+    if max_test_examples < 1:
+        raise ValueError('max_test_examples must be positive')
+    if len(examples) <= max_test_examples:
+        return examples
+    selected_indices = sorted(
+        random.Random(seed).sample(range(len(examples)), max_test_examples))
+    return [examples[index] for index in selected_indices]
 
 
 def _set_seed(seed: int) -> None:
@@ -164,8 +196,9 @@ def train_adapter(
     learning_rate: float = 2e-4,
     patience: int = 3,
     seed: int = SEED,
+    require_approved: bool = True,
 ) -> dict[str, Any]:
-    """Train LoRA on train turns, select by validation loss, and save adapter."""
+    """Train LoRA, selecting by group-safe validation loss."""
     if epochs < 1 or batch_size < 1 or patience < 1:
         raise ValueError('epochs, batch_size, and patience must be positive')
     if learning_rate <= 0:
@@ -196,6 +229,7 @@ def train_adapter(
         seed=seed,
         max_sequence_length=MAX_SEQUENCE_LENGTH,
         tokenizer=tokenizer,
+        require_approved=require_approved,
     )
     dtype = _model_dtype(torch)
     base_model = AutoModelForCausalLM.from_pretrained(
@@ -356,10 +390,11 @@ def train_adapter(
             'history': history,
         },
         'data': data_summary,
+        'draft_data_opt_in': not require_approved,
         'held_out_test_evaluated': False,
         'limitation': (
-            '20 owner-approved, project-authored examples are a tiny pilot; '
-            'validation loss does not establish conversational quality.'),
+            'The dialogue data is a small experimental corpus; validation '
+            'loss does not establish conversational quality.'),
     }
     (output_path / 'training_metadata.json').write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2) + '\n',
@@ -373,6 +408,8 @@ def evaluate_test_once(
     adapter_dir: str | Path,
     report_path: str | Path,
     seed: int = SEED,
+    require_approved: bool = True,
+    max_test_examples: int = 32,
 ) -> dict[str, Any]:
     """Compare base and adapter on held-out test prompts exactly once."""
     import torch
@@ -385,12 +422,17 @@ def evaluate_test_once(
     if report_file.exists():
         raise FileExistsError(
             'refusing to overwrite one-shot test report: %s' % report_file)
-    records = load_jsonl(dataset_path, require_approved=True)
-    split_records = split_by_group(records, seed=seed)
+    records = load_jsonl(
+        dataset_path, require_approved=require_approved)
+    split_records = split_by_group(
+        records, seed=seed, require_approved=require_approved)
     test_examples = list(build_supervised_examples(
-        split_records['test'], require_approved=True))
+        split_records['test'], require_approved=require_approved))
     if not test_examples:
         raise ValueError('held-out test split contains no assistant turns')
+    available_test_turn_count = len(test_examples)
+    test_examples = _select_test_examples(
+        test_examples, seed, max_test_examples)
 
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_ID,
@@ -465,9 +507,16 @@ def evaluate_test_once(
         'model_id': MODEL_ID,
         'model_revision': MODEL_REVISION,
         'seed': seed,
-        'data_fingerprint': dataset_fingerprint(records),
+        'data_fingerprint': dataset_fingerprint(
+            records, require_approved=require_approved),
+        'review_statuses': sorted({
+            record['review']['status'] for record in records
+        }),
         'test_record_count': len(split_records['test']),
         'test_turn_count': len(comparisons),
+        'available_test_turn_count': available_test_turn_count,
+        'test_sampling_seed': seed,
+        'max_test_examples': max_test_examples,
         'generation': {
             'strategy': 'greedy',
             'max_new_tokens': MAX_NEW_TOKENS,
@@ -475,8 +524,8 @@ def evaluate_test_once(
         },
         'comparisons': comparisons,
         'limitation': (
-            'Only two held-out conversations are available. This is a '
-            'one-shot qualitative comparison, not a reliable quality score.'),
+            'A deterministic sample of held-out turns is for one-shot '
+            'qualitative inspection, not a reliable quality score.'),
     }
     report_file.parent.mkdir(parents=True, exist_ok=True)
     with report_file.open('x', encoding='utf-8') as destination:
@@ -487,7 +536,7 @@ def evaluate_test_once(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description='Train Qwen3-0.6B LoRA from approved Turkish dialogues')
+        description='Train Qwen3-0.6B LoRA from Turkish dialogue records')
     parser.add_argument('--data', required=True)
     parser.add_argument('--output', required=True)
     parser.add_argument('--epochs', type=int, default=8)
@@ -495,6 +544,10 @@ def main() -> int:
     parser.add_argument('--learning-rate', type=float, default=2e-4)
     parser.add_argument('--patience', type=int, default=3)
     parser.add_argument('--seed', type=int, default=SEED)
+    parser.add_argument(
+        '--allow-draft-data',
+        action='store_true',
+        help='explicitly allow data not individually approved for training')
     args = parser.parse_args()
     metadata = train_adapter(
         args.data,
@@ -504,6 +557,7 @@ def main() -> int:
         learning_rate=args.learning_rate,
         patience=args.patience,
         seed=args.seed,
+        require_approved=not args.allow_draft_data,
     )
     print(json.dumps(metadata, ensure_ascii=False, indent=2))
     return 0
