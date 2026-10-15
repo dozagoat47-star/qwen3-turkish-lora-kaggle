@@ -34,30 +34,53 @@ def encode_assistant_turn(
     if not target.strip():
         raise ValueError('assistant target must not be empty')
 
-    prompt_ids = tokenizer.apply_chat_template(
+    prompt_text = tokenizer.apply_chat_template(
         context,
-        tokenize=True,
+        tokenize=False,
         add_generation_prompt=True,
         enable_thinking=False,
     )
+    complete_text = tokenizer.apply_chat_template(
+        [*context, {'role': 'assistant', 'content': target}],
+        tokenize=False,
+        add_generation_prompt=False,
+        enable_thinking=False,
+    )
+    if not complete_text.startswith(prompt_text):
+        raise ValueError(
+            'chat template prompt text is not a prefix of the full conversation')
+
     complete_ids = tokenizer.apply_chat_template(
         [*context, {'role': 'assistant', 'content': target}],
         tokenize=True,
         add_generation_prompt=False,
         enable_thinking=False,
     )
-    if complete_ids[:len(prompt_ids)] != prompt_ids:
+    encoded_text = tokenizer(
+        complete_text,
+        add_special_tokens=False,
+        return_offsets_mapping=True,
+    )
+    input_ids = encoded_text['input_ids']
+    offsets = encoded_text['offset_mapping']
+    if input_ids != complete_ids:
         raise ValueError(
-            'chat template prompt tokens do not match the full conversation')
+            'tokenizer offsets do not align with chat-template tokenization')
+    if len(offsets) != len(input_ids):
+        raise ValueError('tokenizer returned mismatched token offsets')
     if len(complete_ids) > max_sequence_length:
         raise ValueError(
             'encoded conversation exceeds max_sequence_length=%d; shorten '
             'the reviewed example or increase the limit' % max_sequence_length)
-    if len(complete_ids) <= len(prompt_ids):
+    prompt_boundary = len(prompt_text)
+    labels = [
+        token_id if start >= prompt_boundary else -100
+        for token_id, (start, _) in zip(input_ids, offsets)
+    ]
+    if all(label == -100 for label in labels):
         raise ValueError('assistant target produced no trainable tokens')
 
-    labels = [-100] * len(prompt_ids) + complete_ids[len(prompt_ids):]
-    return {'input_ids': complete_ids, 'labels': labels}
+    return {'input_ids': input_ids, 'labels': labels}
 
 
 def prepare_splits(
@@ -157,6 +180,9 @@ def train_adapter(
     if learning_rate <= 0:
         raise ValueError('learning_rate must be positive')
     output_path = Path(output_dir)
+    if output_path.exists() and any(output_path.iterdir()):
+        raise FileExistsError(
+            'training output directory is not empty: %s' % output_path)
 
     import torch
     from peft import LoraConfig, get_peft_model
@@ -165,7 +191,6 @@ def train_adapter(
 
     if not torch.cuda.is_available():
         raise RuntimeError('CUDA GPU required; use a Kaggle GPU accelerator')
-    output_path.mkdir(parents=True, exist_ok=False)
     _set_seed(seed)
     tokenizer = AutoTokenizer.from_pretrained(
         MODEL_ID,
@@ -212,6 +237,7 @@ def train_adapter(
         'cuda',
         enabled=dtype == torch.float16,
     )
+    output_path.mkdir(parents=True, exist_ok=True)
     pad_id = tokenizer.pad_token_id
 
     def collate(rows: list[dict[str, Any]]) -> dict[str, torch.Tensor]:

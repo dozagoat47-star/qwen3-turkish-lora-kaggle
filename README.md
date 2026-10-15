@@ -22,6 +22,11 @@ fingerprint before training. The 20 conversations are split by group into
 is intentionally one-shot; this small pilot does not establish general
 conversational quality.
 
+Assistant-only loss masking uses character offsets from the rendered chat
+template rather than assuming independently tokenized prompt IDs exactly
+prefix the full conversation. This handles subword-boundary differences
+without including prompt tokens in the loss.
+
 ## Local checks
 
 Install the dependencies from `requirements.txt`, then run:
