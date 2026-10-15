@@ -22,6 +22,11 @@ fingerprint before training. The 20 conversations are split by group into
 is intentionally one-shot; this small pilot does not establish general
 conversational quality.
 
+The setup cell removes Kaggle's preinstalled optional `torchao` package.
+This pilot does not use torchao, and an older preinstalled version can make
+PEFT fail while injecting LoRA layers; removing it avoids changing the
+Torch/CUDA installation.
+
 Assistant-only loss masking uses character offsets from the rendered chat
 template and tokenizes both training and generation text through the same
 tokenizer path. It does not assume chat-template token IDs exactly match

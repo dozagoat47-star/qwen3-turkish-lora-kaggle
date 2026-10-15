@@ -1,6 +1,9 @@
+import json
 import os
 import tempfile
 import unittest
+
+BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 from clean_model.qwen_lora import encode_assistant_turn, train_adapter
 
@@ -54,6 +57,15 @@ class _FakeTokenizer:
 
 
 class TestQwenLora(unittest.TestCase):
+    def test_notebook_removes_unused_optional_torchao(self):
+        notebook_path = os.path.join(
+            BASE, 'kaggle_qwen3_0_6b_lora.ipynb')
+        with open(notebook_path, encoding='utf-8') as notebook_file:
+            notebook = json.load(notebook_file)
+        setup_source = ''.join(notebook['cells'][1]['source'])
+        self.assertIn("'pip', 'uninstall', '-y', 'torchao'", setup_source)
+        self.assertIn('This pilot does not use torchao', setup_source)
+
     def test_loss_mask_only_trains_assistant_completion(self):
         result = encode_assistant_turn(
             [{'role': 'user', 'content': 'Selam'}],
