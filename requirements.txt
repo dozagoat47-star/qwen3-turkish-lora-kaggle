@@ -1,5 +1,6 @@
 torch>=2.3
 tokenizers>=0.20,<1.0
-transformers>=4.51,<5
+transformers>=5,<6
 peft>=0.17,<1
 accelerate>=1,<2
+huggingface-hub>=1.16,<2
