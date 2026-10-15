@@ -50,12 +50,6 @@ def encode_assistant_turn(
         raise ValueError(
             'chat template prompt text is not a prefix of the full conversation')
 
-    complete_ids = tokenizer.apply_chat_template(
-        [*context, {'role': 'assistant', 'content': target}],
-        tokenize=True,
-        add_generation_prompt=False,
-        enable_thinking=False,
-    )
     encoded_text = tokenizer(
         complete_text,
         add_special_tokens=False,
@@ -63,12 +57,9 @@ def encode_assistant_turn(
     )
     input_ids = encoded_text['input_ids']
     offsets = encoded_text['offset_mapping']
-    if input_ids != complete_ids:
-        raise ValueError(
-            'tokenizer offsets do not align with chat-template tokenization')
     if len(offsets) != len(input_ids):
         raise ValueError('tokenizer returned mismatched token offsets')
-    if len(complete_ids) > max_sequence_length:
+    if len(input_ids) > max_sequence_length:
         raise ValueError(
             'encoded conversation exceeds max_sequence_length=%d; shorten '
             'the reviewed example or increase the limit' % max_sequence_length)
@@ -418,13 +409,17 @@ def evaluate_test_once(
     base_model.config.use_cache = True
 
     def generate(model: Any, item: dict[str, Any]) -> str:
-        tokens = tokenizer.apply_chat_template(
+        prompt_text = tokenizer.apply_chat_template(
             item['context'],
-            tokenize=True,
+            tokenize=False,
             add_generation_prompt=True,
             enable_thinking=False,
+        )
+        tokens = tokenizer(
+            prompt_text,
+            add_special_tokens=False,
             return_tensors='pt',
-        ).to('cuda')
+        )['input_ids'].to('cuda')
         attention_mask = torch.ones_like(tokens)
         with torch.inference_mode():
             output = model.generate(

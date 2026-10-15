@@ -23,9 +23,9 @@ is intentionally one-shot; this small pilot does not establish general
 conversational quality.
 
 Assistant-only loss masking uses character offsets from the rendered chat
-template rather than assuming independently tokenized prompt IDs exactly
-prefix the full conversation. This handles subword-boundary differences
-without including prompt tokens in the loss.
+template and tokenizes both training and generation text through the same
+tokenizer path. It does not assume chat-template token IDs exactly match
+offset-producing tokenization.
 
 ## Local checks
 

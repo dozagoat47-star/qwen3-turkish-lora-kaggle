@@ -1,10 +1,6 @@
 import os
-import sys
 import tempfile
 import unittest
-
-BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, BASE)
 
 from clean_model.qwen_lora import encode_assistant_turn, train_adapter
 
@@ -22,6 +18,9 @@ class _FakeTokenizer:
         add_generation_prompt,
         enable_thinking,
     ):
+        if tokenize:
+            raise AssertionError(
+                'chat-template and rendered-text tokenization paths differ')
         assert not enable_thinking
         rendered = ''
         for message in messages:
@@ -30,12 +29,6 @@ class _FakeTokenizer:
                 % (message['role'], message['content']))
         if add_generation_prompt:
             rendered += '<|im_start|>assistant\n'
-        if tokenize:
-            return self(
-                rendered,
-                add_special_tokens=False,
-                return_offsets_mapping=False,
-            )['input_ids']
         return rendered
 
     def __call__(
